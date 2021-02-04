@@ -4,6 +4,7 @@ const bodyParser      = require( "body-parser" );
 const nodemailer      = require( "nodemailer" );
 const express         = require( "express" );
 const { MongoClient } = require( "mongodb" );
+const crypto          = require( "crypto" );
 const http            = require( "http" );
 const path            = require( "path" );
 
@@ -27,27 +28,55 @@ function isAllValuesNonEmptyStrings( body ) {
     return !!result;
 }
 
+function createCert( secret, salt ) {
+    const iv = crypto.randomBytes( 16 ); //генерация вектора инициализации
+    const key = crypto.scryptSync( secret, salt, 32 ); //генерация ключа
+    return iv.toString( "hex" ) + key.toString( "hex" );
+}
+
+function getKeyAndIVFromHexCertString( hexcert ) {
+    const iv = Buffer.from( hexcert.slice( 0, 32 ), "hex" );
+    const key = Buffer.from( hexcert.slice( 32 ), "hex" );
+    return { key, iv };
+}
+
+function encrypt( text, key, iv ) {
+    const cipher = crypto.createCipheriv( "aes-256-cbc", key, iv );
+    const encryptedData = cipher.update( Buffer.from( text ) );
+    return Buffer.concat( [ encryptedData, cipher.final() ] ).toString( "hex" );
+}
+
+function decrypt( encryptedData, key, iv ) {
+    const decipher = crypto.createDecipheriv( "aes-256-cbc", key, iv );
+    const decryptedData = decipher.update( encryptedData, "hex" );
+    return Buffer.concat( [ decryptedData, decipher.final() ] ).toString();
+}
 
 const port           = process.env.PORT            || 3000;
 const mongoLink      = process.env.MONGODB_URI     || "mongodb://myUserAdmin:0000@localhost:27017/admin";
 const collectionName = process.env.COLLECTION_NAME || "usersPhonesAndNumbers";
 const mailLogin      = process.env.GMAIL_LOGIN     || "wHaTeVeR123@gmail.com";
 const mailPassword   = process.env.GMAIL_PASS      || "wHaTeVeR123";
+// secret: tqoqTAKDKoF3a#QJp1xUS%i{?khDpWzVzCA*AgNJS#b@jba5Og#D#rJ5JhaDw*~n
+// salt: MzTaulkux6#~P0|%DWX#ixqkX}IQv~Js@z0N~%f|N%ByFI}joflqz$$TQz%w%qZk
+const hexcertificate = process.env.DB_CRYPT_SERT   || "a37bd28941991de94591b4c406608e1bb24620f332b6fb8c47bdd8509dee2b86f6cc182ce23e98b98492690ee330a540";
 
 console.log( "mongoLink: ",      mongoLink      );
 console.log( "port: ",           port           );
 console.log( "collectionName: ", collectionName );
 console.log( "mailLogin: ",      mailLogin      );
 console.log( "mailPassword: ",   mailPassword   );
+console.log( "hexcertificate: ", hexcertificate );
 
 
-let transporter = nodemailer.createTransport( {
+const transporter = nodemailer.createTransport( {
     service: "gmail",
     auth: {
         user: mailLogin,
         pass: mailPassword
     }
 } );
+const { key: dbCryptoKey, iv: dbCryptoIV } = getKeyAndIVFromHexCertString( hexcertificate );
 
 const app = express();
 
@@ -58,18 +87,20 @@ app.use( favicon( __dirname + "/build/favicon.ico" ) );
 app.use( express.static( path.join( __dirname, "build" ) ) );
 app.get( "/*", ( request, response ) => {
     response.sendFile( path.join( __dirname, "build", "index.html" ) );
-});
+} );
 
 app.post( "/addNewUser", async ( request, response ) => {
     const responseData = createEmptyResponseData();
     const { email, phone } = request.body;
-    const userProfile = { email, phone };
-    console.log( "userProfile: ", userProfile );
 
-    if( !isAllValuesNonEmptyStrings( userProfile ) ) {
+    if ( !isAllValuesNonEmptyStrings( { email, phone } ) ) {
         responseData.report.isError = true;
         responseData.report.info = "Не все поля заполнены или неверный формат запроса";
         return response.json( responseData );
+    }
+    const userProfile = {
+        email: encrypt( email, dbCryptoKey, dbCryptoIV ),
+        phone: encrypt( phone, dbCryptoKey, dbCryptoIV )
     }
     try {
         const { result } = await usersCollection.insertOne( userProfile );
@@ -88,13 +119,12 @@ app.post( "/addNewUser", async ( request, response ) => {
 app.post( "/restoreUserPhone", async ( request, response ) => {
     const responseData = createEmptyResponseData();
     const { email } = request.body;
-    const query = { email };
-    console.log("query: ", query);
 
-    if( !isAllValuesNonEmptyStrings( query ) ) {
+    if ( !isAllValuesNonEmptyStrings( { email } ) ) {
         responseData.report.info = "Не все поля заполнены или неверный формат запроса";
         return response.json( responseData );
     }
+    const query = { email: encrypt( email, dbCryptoKey, dbCryptoIV ) };
     try {
         let foundResult = await usersCollection.findOne( query );
         if ( !foundResult ) {
@@ -104,11 +134,11 @@ app.post( "/restoreUserPhone", async ( request, response ) => {
 
         await transporter.sendMail( {
             from: `robot <${ mailLogin }>`,
-            to: foundResult.email,
+            to: email,
             subject: "Восстановление номера телефона",
             html: `
                 <p>Это сообщение было вам отправлено, потому что вы недавно запрашивали восстановление номера телефона.</p>
-                <p>Ваш номер телефона: <strong>${ foundResult.phone }</strong></p>
+                <p>Ваш номер телефона: <strong>${ decrypt( foundResult.phone, dbCryptoKey, dbCryptoIV ) }</strong></p>
             `
         } );
     } catch ( error ) {
