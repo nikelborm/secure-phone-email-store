@@ -8,7 +8,7 @@ async function loader(path, body) {
                 "Content-Type": "application/json"
             })
         });
-        if( !response.ok ) {
+        if ( !response.ok ) {
             return {
                 report: {
                     isError: true,
