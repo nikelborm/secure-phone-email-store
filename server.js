@@ -42,14 +42,18 @@ function getKeyAndIVFromHexCertString( hexcert ) {
 
 function encrypt( text, key, iv ) {
     const cipher = crypto.createCipheriv( "aes-256-cbc", key, iv );
-    const encryptedData = cipher.update( Buffer.from( text ) );
-    return Buffer.concat( [ encryptedData, cipher.final() ] ).toString( "hex" );
+    return Buffer.concat( [
+        cipher.update( Buffer.from( text ) ),
+        cipher.final()
+    ] ).toString( "hex" );
 }
 
 function decrypt( encryptedData, key, iv ) {
     const decipher = crypto.createDecipheriv( "aes-256-cbc", key, iv );
-    const decryptedData = decipher.update( encryptedData, "hex" );
-    return Buffer.concat( [ decryptedData, decipher.final() ] ).toString();
+    return Buffer.concat( [
+        decipher.update( encryptedData, "hex" ),
+        decipher.final()
+    ] ).toString();
 }
 
 const port           = process.env.PORT            || 3000;
